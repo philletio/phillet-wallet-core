@@ -1,0 +1,170 @@
+syntax = "proto3";
+
+package wallet;
+
+option go_package = "github.com/philletio/phillet-wallet-core/api/proto";
+
+import "google/protobuf/timestamp.proto";
+
+// WalletService provides HD wallet management and transaction signing
+service WalletService {
+  // GenerateWallet creates a new HD wallet with mnemonic phrase
+  rpc GenerateWallet(GenerateWalletRequest) returns (GenerateWalletResponse);
+  
+  // ImportWallet imports an existing wallet from mnemonic phrase
+  rpc ImportWallet(ImportWalletRequest) returns (ImportWalletResponse);
+  
+  // GetAddresses returns addresses for specified chains
+  rpc GetAddresses(GetAddressesRequest) returns (GetAddressesResponse);
+  
+  // SignTransaction signs a transaction for specified chain
+  rpc SignTransaction(SignTransactionRequest) returns (SignTransactionResponse);
+  
+  // SignMessage signs a message with wallet's private key
+  rpc SignMessage(SignMessageRequest) returns (SignMessageResponse);
+  
+  // VerifySignature verifies a digital signature
+  rpc VerifySignature(VerifySignatureRequest) returns (VerifySignatureResponse);
+  
+  // GetBalance returns balance for specified address
+  rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse);
+  
+  // GetWalletInfo returns wallet information
+  rpc GetWalletInfo(GetWalletInfoRequest) returns (GetWalletInfoResponse);
+}
+
+// Chain enumeration
+enum Chain {
+  CHAIN_UNSPECIFIED = 0;
+  CHAIN_ETHEREUM = 1;
+  CHAIN_POLYGON = 2;
+  CHAIN_BSC = 3;
+  CHAIN_SOLANA = 4;
+  CHAIN_TON = 5;
+}
+
+// GenerateWalletRequest
+message GenerateWalletRequest {
+  string user_id = 1;
+  repeated Chain chains = 2;
+  int32 word_count = 3; // 12, 15, 18, 21, 24
+  string passphrase = 4; // Optional passphrase for additional security
+}
+
+// GenerateWalletResponse
+message GenerateWalletResponse {
+  string wallet_id = 1;
+  string mnemonic = 2;
+  repeated Address addresses = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+// ImportWalletRequest
+message ImportWalletRequest {
+  string user_id = 1;
+  string mnemonic = 2;
+  string passphrase = 3; // Optional passphrase
+  repeated Chain chains = 4;
+}
+
+// ImportWalletResponse
+message ImportWalletResponse {
+  string wallet_id = 1;
+  repeated Address addresses = 2;
+  google.protobuf.Timestamp imported_at = 3;
+}
+
+// GetAddressesRequest
+message GetAddressesRequest {
+  string wallet_id = 1;
+  repeated Chain chains = 2;
+  int32 start_index = 3;
+  int32 count = 4;
+}
+
+// GetAddressesResponse
+message GetAddressesResponse {
+  repeated Address addresses = 1;
+}
+
+// Address information
+message Address {
+  Chain chain = 1;
+  string address = 2;
+  string derivation_path = 3;
+  int32 index = 4;
+  bool is_change = 5;
+}
+
+// SignTransactionRequest
+message SignTransactionRequest {
+  string wallet_id = 1;
+  Chain chain = 2;
+  bytes transaction_data = 3;
+  int32 address_index = 4;
+}
+
+// SignTransactionResponse
+message SignTransactionResponse {
+  bytes signed_transaction = 1;
+  string signature = 2;
+  string transaction_hash = 3;
+}
+
+// SignMessageRequest
+message SignMessageRequest {
+  string wallet_id = 1;
+  bytes message = 2;
+  int32 address_index = 3;
+  Chain chain = 4;
+}
+
+// SignMessageResponse
+message SignMessageResponse {
+  bytes signature = 1;
+  string signature_hex = 2;
+  string message_hash = 3;
+}
+
+// VerifySignatureRequest
+message VerifySignatureRequest {
+  bytes message = 1;
+  bytes signature = 2;
+  string address = 3;
+  Chain chain = 4;
+}
+
+// VerifySignatureResponse
+message VerifySignatureResponse {
+  bool is_valid = 1;
+  string recovered_address = 2;
+}
+
+// GetBalanceRequest
+message GetBalanceRequest {
+  string address = 1;
+  Chain chain = 2;
+}
+
+// GetBalanceResponse
+message GetBalanceResponse {
+  string balance = 1;
+  string symbol = 2;
+  int32 decimals = 3;
+  Chain chain = 4;
+}
+
+// GetWalletInfoRequest
+message GetWalletInfoRequest {
+  string wallet_id = 1;
+}
+
+// GetWalletInfoResponse
+message GetWalletInfoResponse {
+  string wallet_id = 1;
+  string user_id = 2;
+  repeated Chain supported_chains = 3;
+  int32 address_count = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp last_used = 6;
+} 

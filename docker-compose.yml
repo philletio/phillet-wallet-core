@@ -1,0 +1,135 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: phillet-wallet-postgres
+    environment:
+      POSTGRES_DB: phillet_wallet
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d phillet_wallet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - phillet-network
+
+  # pgAdmin (optional, for database management)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: phillet-wallet-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@phillet.io
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "8080:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - phillet-network
+    profiles:
+      - tools
+
+  # Redis (for caching and session storage)
+  redis:
+    image: redis:7-alpine
+    container_name: phillet-wallet-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - phillet-network
+
+  # Wallet Core Service
+  wallet-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: phillet-wallet-core
+    environment:
+      # Server configuration
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 50051
+      
+      # Database configuration
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: password
+      DB_NAME: phillet_wallet
+      DB_SSL_MODE: disable
+      
+      # JWT configuration
+      JWT_SECRET_KEY: your-secret-key-change-in-production
+      JWT_ISSUER: phillet-wallet
+      JWT_AUDIENCE: wallet-api
+      JWT_EXPIRATION: 24h
+      JWT_REFRESH_EXPIRATION: 168h
+      
+      # Security configuration
+      ENCRYPTION_KEY: your-encryption-key-change-in-production
+      SALT_ROUNDS: 12
+      
+      # Logging configuration
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+    ports:
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - phillet-network
+    restart: unless-stopped
+
+  # API Gateway (Envoy Proxy)
+  api-gateway:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: phillet-wallet-gateway
+    ports:
+      - "8081:8080"
+      - "9901:9901"
+    volumes:
+      - ./config/envoy.yaml:/etc/envoy/envoy.yaml
+    depends_on:
+      - wallet-core
+    networks:
+      - phillet-network
+    profiles:
+      - gateway
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  phillet-network:
+    driver: bridge 
