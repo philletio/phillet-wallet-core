@@ -20,19 +20,20 @@ type User struct {
 
 // Wallet represents a wallet in the system
 type Wallet struct {
-	ID             uuid.UUID              `json:"id" db:"id"`
-	WalletID       string                 `json:"wallet_id" db:"wallet_id"`
-	UserID         uuid.UUID              `json:"user_id" db:"user_id"`
-	MnemonicHash   string                 `json:"mnemonic_hash" db:"mnemonic_hash"`
-	Salt           string                 `json:"salt" db:"salt"`
-	PassphraseHash *string                `json:"passphrase_hash,omitempty" db:"passphrase_hash"`
-	CreatedAt      time.Time              `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at" db:"updated_at"`
-	LastUsedAt     *time.Time             `json:"last_used_at,omitempty" db:"last_used_at"`
-	IsActive       bool                   `json:"is_active" db:"is_active"`
-	Metadata       map[string]interface{} `json:"metadata" db:"metadata"`
-	User           *User                  `json:"user,omitempty"`
-	Addresses      []*Address             `json:"addresses,omitempty"`
+	ID                uuid.UUID              `json:"id" db:"id"`
+	WalletID          string                 `json:"wallet_id" db:"wallet_id"`
+	UserID            uuid.UUID              `json:"user_id" db:"user_id"`
+	EncryptedMnemonic []byte                 `json:"encrypted_mnemonic" db:"encrypted_mnemonic"`
+	MnemonicHash      string                 `json:"mnemonic_hash" db:"mnemonic_hash"`
+	Salt              string                 `json:"salt" db:"salt"`
+	PassphraseHash    *string                `json:"passphrase_hash,omitempty" db:"passphrase_hash"`
+	CreatedAt         time.Time              `json:"created_at" db:"created_at"`
+	UpdatedAt         time.Time              `json:"updated_at" db:"updated_at"`
+	LastUsedAt        *time.Time             `json:"last_used_at,omitempty" db:"last_used_at"`
+	IsActive          bool                   `json:"is_active" db:"is_active"`
+	Metadata          map[string]interface{} `json:"metadata" db:"metadata"`
+	User              *User                  `json:"user,omitempty"`
+	Addresses         []*Address             `json:"addresses,omitempty"`
 }
 
 // Address represents a wallet address

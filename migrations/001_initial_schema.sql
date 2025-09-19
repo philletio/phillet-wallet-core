@@ -21,6 +21,7 @@ CREATE TABLE wallets (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     wallet_id VARCHAR(255) UNIQUE NOT NULL,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    encrypted_mnemonic BYTEA,
     mnemonic_hash VARCHAR(255) NOT NULL, -- Hashed mnemonic for security
     salt VARCHAR(255) NOT NULL, -- Salt for mnemonic hashing
     passphrase_hash VARCHAR(255), -- Optional passphrase hash

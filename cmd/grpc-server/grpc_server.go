@@ -13,16 +13,14 @@ import (
 	"github.com/philletio/phillet-wallet-core/internal/config"
 	"github.com/philletio/phillet-wallet-core/internal/repository"
 	"github.com/philletio/phillet-wallet-core/internal/service"
+	redis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 func startGRPCServer() {
 	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
+	cfg := config.Load()
 
 	// Initialize database connection
 	db, err := repository.NewPostgresConnection(cfg.Database)
@@ -47,6 +45,21 @@ func startGRPCServer() {
 
 	// Create wallet service with repository and config
 	walletService := service.NewWalletService(repo, cfg)
+
+	// Initialize Redis cache if configured
+	if cfg.Cache.RedisAddr != "" {
+		cache := redis.NewClient(&redis.Options{
+			Addr:     cfg.Cache.RedisAddr,
+			Password: cfg.Cache.RedisPassword,
+			DB:       cfg.Cache.RedisDB,
+		})
+		if err := cache.Ping(ctx).Err(); err != nil {
+			log.Printf("Redis not available: %v", err)
+		} else {
+			walletService = walletService.WithCache(cache)
+			log.Println("Redis cache enabled")
+		}
+	}
 
 	// Register wallet service
 	proto.RegisterWalletServiceServer(grpcServer, walletService)

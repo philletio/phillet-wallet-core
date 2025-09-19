@@ -43,6 +43,14 @@ enum Chain {
   CHAIN_TON = 5;
 }
 
+// Standardized error response per spec
+message ErrorResponse {
+  string code = 1;
+  string message = 2;
+  map<string, string> details = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
 // GenerateWalletRequest
 message GenerateWalletRequest {
   string user_id = 1;

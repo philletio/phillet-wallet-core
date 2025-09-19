@@ -106,12 +106,12 @@ func (r *PostgresRepository) GetUserByUserID(ctx context.Context, userID string)
 // Wallet operations
 func (r *PostgresRepository) CreateWallet(ctx context.Context, wallet *models.Wallet) error {
 	query := `
-		INSERT INTO wallets (id, wallet_id, user_id, mnemonic_hash, salt, passphrase_hash, created_at, updated_at, is_active, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO wallets (id, wallet_id, user_id, encrypted_mnemonic, mnemonic_hash, salt, passphrase_hash, created_at, updated_at, is_active, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
-		wallet.ID, wallet.WalletID, wallet.UserID, wallet.MnemonicHash, wallet.Salt,
+		wallet.ID, wallet.WalletID, wallet.UserID, wallet.EncryptedMnemonic, wallet.MnemonicHash, wallet.Salt,
 		wallet.PassphraseHash, wallet.CreatedAt, wallet.UpdatedAt, wallet.IsActive, wallet.Metadata)
 
 	return err
@@ -119,13 +119,13 @@ func (r *PostgresRepository) CreateWallet(ctx context.Context, wallet *models.Wa
 
 func (r *PostgresRepository) GetWalletByID(ctx context.Context, id uuid.UUID) (*models.Wallet, error) {
 	query := `
-		SELECT id, wallet_id, user_id, mnemonic_hash, salt, passphrase_hash, created_at, updated_at, last_used_at, is_active, metadata
+		SELECT id, wallet_id, user_id, encrypted_mnemonic, mnemonic_hash, salt, passphrase_hash, created_at, updated_at, last_used_at, is_active, metadata
 		FROM wallets WHERE id = $1
 	`
 
 	var wallet models.Wallet
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&wallet.ID, &wallet.WalletID, &wallet.UserID, &wallet.MnemonicHash, &wallet.Salt,
+		&wallet.ID, &wallet.WalletID, &wallet.UserID, &wallet.EncryptedMnemonic, &wallet.MnemonicHash, &wallet.Salt,
 		&wallet.PassphraseHash, &wallet.CreatedAt, &wallet.UpdatedAt, &wallet.LastUsedAt,
 		&wallet.IsActive, &wallet.Metadata)
 
@@ -138,13 +138,13 @@ func (r *PostgresRepository) GetWalletByID(ctx context.Context, id uuid.UUID) (*
 
 func (r *PostgresRepository) GetWalletByWalletID(ctx context.Context, walletID string) (*models.Wallet, error) {
 	query := `
-		SELECT id, wallet_id, user_id, mnemonic_hash, salt, passphrase_hash, created_at, updated_at, last_used_at, is_active, metadata
+		SELECT id, wallet_id, user_id, encrypted_mnemonic, mnemonic_hash, salt, passphrase_hash, created_at, updated_at, last_used_at, is_active, metadata
 		FROM wallets WHERE wallet_id = $1
 	`
 
 	var wallet models.Wallet
 	err := r.db.QueryRowContext(ctx, query, walletID).Scan(
-		&wallet.ID, &wallet.WalletID, &wallet.UserID, &wallet.MnemonicHash, &wallet.Salt,
+		&wallet.ID, &wallet.WalletID, &wallet.UserID, &wallet.EncryptedMnemonic, &wallet.MnemonicHash, &wallet.Salt,
 		&wallet.PassphraseHash, &wallet.CreatedAt, &wallet.UpdatedAt, &wallet.LastUsedAt,
 		&wallet.IsActive, &wallet.Metadata)
 
@@ -157,7 +157,7 @@ func (r *PostgresRepository) GetWalletByWalletID(ctx context.Context, walletID s
 
 func (r *PostgresRepository) GetWalletsByUserID(ctx context.Context, userID uuid.UUID) ([]*models.Wallet, error) {
 	query := `
-		SELECT id, wallet_id, user_id, mnemonic_hash, salt, passphrase_hash, created_at, updated_at, last_used_at, is_active, metadata
+		SELECT id, wallet_id, user_id, encrypted_mnemonic, mnemonic_hash, salt, passphrase_hash, created_at, updated_at, last_used_at, is_active, metadata
 		FROM wallets WHERE user_id = $1 AND is_active = true
 		ORDER BY created_at DESC
 	`
@@ -172,7 +172,7 @@ func (r *PostgresRepository) GetWalletsByUserID(ctx context.Context, userID uuid
 	for rows.Next() {
 		var wallet models.Wallet
 		err := rows.Scan(
-			&wallet.ID, &wallet.WalletID, &wallet.UserID, &wallet.MnemonicHash, &wallet.Salt,
+			&wallet.ID, &wallet.WalletID, &wallet.UserID, &wallet.EncryptedMnemonic, &wallet.MnemonicHash, &wallet.Salt,
 			&wallet.PassphraseHash, &wallet.CreatedAt, &wallet.UpdatedAt, &wallet.LastUsedAt,
 			&wallet.IsActive, &wallet.Metadata)
 		if err != nil {

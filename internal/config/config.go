@@ -23,6 +23,12 @@ type Config struct {
 
 	// Logging configuration
 	Logging LoggingConfig `json:"logging"`
+
+	// Blockchain RPC configuration
+	RPC RPCConfig `json:"rpc"`
+
+	// Cache configuration
+	Cache CacheConfig `json:"cache"`
 }
 
 // ServerConfig holds server-related configuration
@@ -70,6 +76,22 @@ type LoggingConfig struct {
 	Format string `json:"format"`
 }
 
+// RPCConfig holds blockchain RPC endpoints and timeouts
+type RPCConfig struct {
+	EthereumURL string        `json:"ethereum_url"`
+	PolygonURL  string        `json:"polygon_url"`
+	BSCURL      string        `json:"bsc_url"`
+	Timeout     time.Duration `json:"timeout"`
+}
+
+// CacheConfig holds cache client settings
+type CacheConfig struct {
+	RedisAddr     string        `json:"redis_addr"`
+	RedisPassword string        `json:"redis_password"`
+	RedisDB       int           `json:"redis_db"`
+	BalanceTTL    time.Duration `json:"balance_ttl"`
+}
+
 // Load loads configuration from environment variables
 func Load() *Config {
 	return &Config{
@@ -107,6 +129,18 @@ func Load() *Config {
 		Logging: LoggingConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),
 			Format: getEnv("LOG_FORMAT", "json"),
+		},
+		RPC: RPCConfig{
+			EthereumURL: getEnv("RPC_ETHEREUM_URL", ""),
+			PolygonURL:  getEnv("RPC_POLYGON_URL", ""),
+			BSCURL:      getEnv("RPC_BSC_URL", ""),
+			Timeout:     getEnvAsDuration("RPC_TIMEOUT", 3*time.Second),
+		},
+		Cache: CacheConfig{
+			RedisAddr:     getEnv("REDIS_ADDR", ""),
+			RedisPassword: getEnv("REDIS_PASSWORD", ""),
+			RedisDB:       getEnvAsInt("REDIS_DB", 0),
+			BalanceTTL:    getEnvAsDuration("BALANCE_TTL", 30*time.Second),
 		},
 	}
 }

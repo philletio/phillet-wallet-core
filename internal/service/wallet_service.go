@@ -1,16 +1,28 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"math/big"
+	"net/http"
+	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/google/uuid"
 	"github.com/philletio/phillet-wallet-core/api/proto"
 	"github.com/philletio/phillet-wallet-core/internal/config"
 	"github.com/philletio/phillet-wallet-core/internal/models"
 	"github.com/philletio/phillet-wallet-core/internal/repository"
-	"github.com/philletio/phillet-wallet-core/internal/wallet"
+	"github.com/philletio/phillet-wallet-core/internal/security"
+	walletpkg "github.com/philletio/phillet-wallet-core/internal/wallet"
+	redis "github.com/redis/go-redis/v9"
+	"golang.org/x/crypto/argon2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -22,6 +34,7 @@ type WalletService struct {
 	proto.UnimplementedWalletServiceServer
 	repo   *repository.PostgresRepository
 	config *config.Config
+	cache  *redis.Client
 }
 
 // NewWalletService creates a new wallet service instance
@@ -30,6 +43,12 @@ func NewWalletService(repo *repository.PostgresRepository, config *config.Config
 		repo:   repo,
 		config: config,
 	}
+}
+
+// WithCache sets the Redis cache client and returns the service (for chaining during setup)
+func (s *WalletService) WithCache(cache *redis.Client) *WalletService {
+	s.cache = cache
+	return s
 }
 
 // extractUserIDFromContext extracts user ID from JWT token in gRPC metadata
@@ -75,8 +94,8 @@ func (s *WalletService) GenerateWallet(ctx context.Context, req *proto.GenerateW
 		return nil, status.Error(codes.InvalidArgument, "word_count must be 12, 15, 18, 21, or 24")
 	}
 
-	// Generate new wallet
-	hdWallet, err := wallet.NewHDWallet(userID)
+	// Generate new wallet with requested word count and passphrase
+	hdWallet, err := walletpkg.NewHDWallet(userID, int(req.WordCount), req.Passphrase)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to generate wallet: %v", err)
 	}
@@ -84,19 +103,37 @@ func (s *WalletService) GenerateWallet(ctx context.Context, req *proto.GenerateW
 	// Generate wallet ID
 	walletID := fmt.Sprintf("wallet_%s_%d", userID, time.Now().Unix())
 
+	// Hash passphrase if provided using Argon2id
+	var passphraseHashPtr *string
+	if req.Passphrase != "" {
+		// Use wallet salt as part of the hash input to bind to this wallet instance
+		saltBytes := []byte(hdWallet.GetSalt())
+		hash := argon2.IDKey([]byte(req.Passphrase), saltBytes, 1, 64*1024, 4, 32)
+		hashHex := fmt.Sprintf("%x", hash)
+		passphraseHashPtr = &hashHex
+	}
+
+	// Encrypt mnemonic for storage at rest
+	encKey := security.DeriveKey(s.config.Security.EncryptionKey, hdWallet.GetSalt())
+	encMnemonic, err := security.EncryptAESGCM(encKey, []byte(hdWallet.GetMnemonic()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to encrypt mnemonic: %v", err)
+	}
+
 	// Create wallet model for database
 	walletModel := &models.Wallet{
-		ID:             uuid.New(),
-		WalletID:       walletID,
-		UserID:         uuid.New(),                 // Generate new UUID for user
-		MnemonicHash:   hdWallet.GetMnemonicHash(), // Store hash, not plain mnemonic
-		Salt:           hdWallet.GetSalt(),
-		PassphraseHash: nil, // TODO: Add passphrase support
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
-		LastUsedAt:     nil, // Will be set to current time
-		IsActive:       true,
-		Metadata:       map[string]interface{}{"word_count": req.WordCount},
+		ID:                uuid.New(),
+		WalletID:          walletID,
+		UserID:            uuid.New(), // Generate new UUID for user
+		EncryptedMnemonic: encMnemonic,
+		MnemonicHash:      hdWallet.GetMnemonicHash(), // Store hash, not plain mnemonic
+		Salt:              hdWallet.GetSalt(),
+		PassphraseHash:    passphraseHashPtr,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+		LastUsedAt:        nil, // Will be set to current time
+		IsActive:          true,
+		Metadata:          map[string]interface{}{"word_count": req.WordCount},
 	}
 
 	// Save wallet to database
@@ -200,8 +237,8 @@ func (s *WalletService) ImportWallet(ctx context.Context, req *proto.ImportWalle
 		return nil, status.Error(codes.InvalidArgument, "mnemonic is required")
 	}
 
-	// Import wallet
-	hdWallet, err := wallet.ImportHDWallet(req.Mnemonic, userID)
+	// Import wallet with optional passphrase
+	hdWallet, err := walletpkg.ImportHDWallet(req.Mnemonic, userID, req.Passphrase)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "failed to import wallet: %v", err)
 	}
@@ -209,19 +246,36 @@ func (s *WalletService) ImportWallet(ctx context.Context, req *proto.ImportWalle
 	// Generate wallet ID
 	walletID := fmt.Sprintf("wallet_%s_%d", userID, time.Now().Unix())
 
+	// Hash passphrase if provided using Argon2id
+	var passphraseHashPtr *string
+	if req.Passphrase != "" {
+		saltBytes := []byte(hdWallet.GetSalt())
+		hash := argon2.IDKey([]byte(req.Passphrase), saltBytes, 1, 64*1024, 4, 32)
+		hashHex := fmt.Sprintf("%x", hash)
+		passphraseHashPtr = &hashHex
+	}
+
+	// Encrypt mnemonic for storage at rest
+	encKey := security.DeriveKey(s.config.Security.EncryptionKey, hdWallet.GetSalt())
+	encMnemonic, err := security.EncryptAESGCM(encKey, []byte(hdWallet.GetMnemonic()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to encrypt mnemonic: %v", err)
+	}
+
 	// Create wallet model for database
 	walletModel := &models.Wallet{
-		ID:             uuid.New(),
-		WalletID:       walletID,
-		UserID:         uuid.New(), // Generate new UUID for user
-		MnemonicHash:   hdWallet.GetMnemonicHash(),
-		Salt:           hdWallet.GetSalt(),
-		PassphraseHash: nil, // TODO: Add passphrase support
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
-		LastUsedAt:     nil,
-		IsActive:       true,
-		Metadata:       map[string]interface{}{"imported": true},
+		ID:                uuid.New(),
+		WalletID:          walletID,
+		UserID:            uuid.New(), // Generate new UUID for user
+		EncryptedMnemonic: encMnemonic,
+		MnemonicHash:      hdWallet.GetMnemonicHash(),
+		Salt:              hdWallet.GetSalt(),
+		PassphraseHash:    passphraseHashPtr,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+		LastUsedAt:        nil,
+		IsActive:          true,
+		Metadata:          map[string]interface{}{"imported": true},
 	}
 
 	// Save wallet to database
@@ -329,16 +383,49 @@ func (s *WalletService) GetAddresses(ctx context.Context, req *proto.GetAddresse
 	// For now, skip user verification since we're using generated UUIDs
 	// In production, this should verify the user ID from JWT matches the wallet user ID
 
-	// Get addresses from database
+	// Get existing addresses from database
 	addresses, err := s.repo.GetAddressesByWalletIDString(ctx, req.WalletId)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get addresses: %v", err)
 	}
 
+	// Build a set of requested chains; if none provided, include chains we already have
+	requestedChains := make(map[proto.Chain]bool)
+	if len(req.Chains) == 0 {
+		for _, addr := range addresses {
+			requestedChains[s.mapChainToProto(addr.Chain)] = true
+		}
+	} else {
+		for _, ch := range req.Chains {
+			requestedChains[ch] = true
+		}
+	}
+
+	// Determine start and count
+	start := int(req.StartIndex)
+	if start < 0 {
+		start = 0
+	}
+	count := int(req.Count)
+	if count <= 0 {
+		count = 10
+	}
+
+	// Generate any missing addresses for requested range (EVM only for now)
+	// Note: This demo does not reconstruct the HD wallet; a production system would derive from seed stored securely.
+	// Here we only return already stored addresses; generation is handled at create/import time for index 0.
+
 	var protoAddresses []*proto.Address
 	for _, addr := range addresses {
+		chainEnum := s.mapChainToProto(addr.Chain)
+		if !requestedChains[chainEnum] {
+			continue
+		}
+		if addr.AddressIndex < start || addr.AddressIndex >= start+count {
+			continue
+		}
 		protoAddresses = append(protoAddresses, &proto.Address{
-			Chain:          s.mapChainToProto(addr.Chain),
+			Chain:          chainEnum,
 			Address:        addr.Address,
 			DerivationPath: addr.DerivationPath,
 			Index:          int32(addr.AddressIndex),
@@ -383,11 +470,35 @@ func (s *WalletService) SignMessage(ctx context.Context, req *proto.SignMessageR
 		return nil, status.Errorf(codes.NotFound, "address not found: %v", err)
 	}
 
-	// TODO: Reconstruct HD wallet from stored data for signing
-	// For now, we'll return a mock signature
-	signature := []byte("mock_signature")
+	// Reconstruct seed by decrypting mnemonic; derive key and sign (EVM only currently)
+	if req.Chain != proto.Chain_CHAIN_ETHEREUM && req.Chain != proto.Chain_CHAIN_POLYGON && req.Chain != proto.Chain_CHAIN_BSC {
+		return nil, status.Error(codes.Unimplemented, "message signing for this chain is not implemented yet")
+	}
+
+	// Decrypt mnemonic using wallet salt and configured key
+	encKey := security.DeriveKey(s.config.Security.EncryptionKey, wallet.Salt)
+	mnemonicBytes, err := security.DecryptAESGCM(encKey, wallet.EncryptedMnemonic)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to decrypt mnemonic: %v", err)
+	}
+
+	// Recreate HD wallet from mnemonic (no passphrase for now; would need to be supplied if used)
+	hd, err := walletpkg.ImportHDWallet(string(mnemonicBytes), wallet.UserID.String(), "")
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to reconstruct wallet: %v", err)
+	}
+	// Derive private key for index
+	pk, err := hd.DeriveEthereumPrivateKey(int(req.AddressIndex))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to derive private key: %v", err)
+	}
+	sig, err := hd.SignMessage(req.Message, pk)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to sign message: %v", err)
+	}
+	signature := sig
 	signatureHex := "0x" + fmt.Sprintf("%x", signature)
-	messageHash := fmt.Sprintf("%x", req.Message)
+	messageHash := fmt.Sprintf("%x", crypto.Keccak256(req.Message))
 
 	// Save signature to database
 	signatureModel := &models.Signature{
@@ -456,15 +567,28 @@ func (s *WalletService) VerifySignature(ctx context.Context, req *proto.VerifySi
 		return nil, status.Error(codes.InvalidArgument, "address is required")
 	}
 
-	// TODO: Implement actual signature verification
-	// For now, return mock result
-	isValid := true
-	recoveredAddress := req.Address
-
-	return &proto.VerifySignatureResponse{
-		IsValid:          isValid,
-		RecoveredAddress: recoveredAddress,
-	}, nil
+	switch req.Chain {
+	case proto.Chain_CHAIN_ETHEREUM, proto.Chain_CHAIN_POLYGON, proto.Chain_CHAIN_BSC:
+		// EVM-compatible verification
+		isValid, err := walletpkg.VerifySignature(req.Message, req.Signature, req.Address)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "verification failed: %v", err)
+		}
+		// We cannot recover address without v,r,s unless signature is standard 65-byte ECDSA (which it is), but
+		// wallet.VerifySignature already checks equivalence; just echo address when valid
+		recoveredAddress := ""
+		if isValid {
+			recoveredAddress = req.Address
+		}
+		return &proto.VerifySignatureResponse{
+			IsValid:          isValid,
+			RecoveredAddress: recoveredAddress,
+		}, nil
+	case proto.Chain_CHAIN_SOLANA, proto.Chain_CHAIN_TON:
+		return nil, status.Error(codes.Unimplemented, "verification for this chain is not implemented yet")
+	default:
+		return nil, status.Error(codes.InvalidArgument, "unsupported or unspecified chain")
+	}
 }
 
 // GetWalletInfo returns wallet information
@@ -516,14 +640,231 @@ func (s *WalletService) GetWalletInfo(ctx context.Context, req *proto.GetWalletI
 
 // SignTransaction signs a transaction for specified chain
 func (s *WalletService) SignTransaction(ctx context.Context, req *proto.SignTransactionRequest) (*proto.SignTransactionResponse, error) {
-	// TODO: Implement transaction signing
-	return nil, status.Error(codes.Unimplemented, "transaction signing not implemented yet")
+	if req.WalletId == "" {
+		return nil, status.Error(codes.InvalidArgument, "wallet_id is required")
+	}
+	if len(req.TransactionData) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "transaction_data is required")
+	}
+	if req.Chain != proto.Chain_CHAIN_ETHEREUM && req.Chain != proto.Chain_CHAIN_POLYGON && req.Chain != proto.Chain_CHAIN_BSC {
+		return nil, status.Error(codes.Unimplemented, "transaction signing for this chain is not implemented yet")
+	}
+
+	// Load wallet
+	w, err := s.repo.GetWalletByWalletID(ctx, req.WalletId)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "wallet not found: %v", err)
+	}
+	// Decrypt mnemonic
+	encKey := security.DeriveKey(s.config.Security.EncryptionKey, w.Salt)
+	mnemonicBytes, err := security.DecryptAESGCM(encKey, w.EncryptedMnemonic)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to decrypt mnemonic: %v", err)
+	}
+	// Recreate HD wallet (no passphrase support here)
+	hd, err := walletpkg.ImportHDWallet(string(mnemonicBytes), w.UserID.String(), "")
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to reconstruct wallet: %v", err)
+	}
+	// Derive private key
+	pk, err := hd.DeriveEthereumPrivateKey(int(req.AddressIndex))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to derive private key: %v", err)
+	}
+
+	// Parse minimal EVM transaction fields from JSON (legacy or EIP-1559)
+	var txIn struct {
+		Nonce                uint64 `json:"nonce"`
+		GasPrice             string `json:"gasPrice"`
+		MaxFeePerGas         string `json:"maxFeePerGas"`
+		MaxPriorityFeePerGas string `json:"maxPriorityFeePerGas"`
+		Gas                  uint64 `json:"gas"`
+		To                   string `json:"to"`
+		Value                string `json:"value"`
+		Data                 string `json:"data"`
+		ChainID              int64  `json:"chainId"`
+	}
+	if err := json.Unmarshal(req.TransactionData, &txIn); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid transaction_data: %v", err)
+	}
+	// Hex decode numeric fields
+	parseHex := func(s string) (*big.Int, error) {
+		if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+			s = s[2:]
+		}
+		if s == "" {
+			return big.NewInt(0), nil
+		}
+		n := new(big.Int)
+		_, ok := n.SetString(s, 16)
+		if !ok {
+			return nil, fmt.Errorf("invalid hex number")
+		}
+		return n, nil
+	}
+	gasPrice, err := parseHex(txIn.GasPrice)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid gasPrice: %v", err)
+	}
+	value, err := parseHex(txIn.Value)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid value: %v", err)
+	}
+	var toPtr *common.Address
+	if txIn.To != "" {
+		addr := common.HexToAddress(txIn.To)
+		toPtr = &addr
+	}
+	var dataBytes []byte
+	if txIn.Data != "" {
+		db, err := hex.DecodeString(strings.TrimPrefix(txIn.Data, "0x"))
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid data: %v", err)
+		}
+		dataBytes = db
+	}
+
+	// Build legacy or EIP-1559 transaction
+	chainID := big.NewInt(txIn.ChainID)
+	var tx *types.Transaction
+	if txIn.MaxFeePerGas != "" || txIn.MaxPriorityFeePerGas != "" {
+		feeCap, err := parseHex(txIn.MaxFeePerGas)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid maxFeePerGas: %v", err)
+		}
+		tipCap, err := parseHex(txIn.MaxPriorityFeePerGas)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid maxPriorityFeePerGas: %v", err)
+		}
+		tx = types.NewTx(&types.DynamicFeeTx{
+			ChainID:   chainID,
+			Nonce:     txIn.Nonce,
+			GasTipCap: tipCap,
+			GasFeeCap: feeCap,
+			Gas:       txIn.Gas,
+			To:        toPtr,
+			Value:     value,
+			Data:      dataBytes,
+		})
+	} else {
+		tx = types.NewTx(&types.LegacyTx{
+			Nonce:    txIn.Nonce,
+			GasPrice: gasPrice,
+			Gas:      txIn.Gas,
+			To:       toPtr,
+			Value:    value,
+			Data:     dataBytes,
+		})
+	}
+	signer := types.LatestSignerForChainID(chainID)
+	signedTx, err := types.SignTx(tx, signer, pk)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to sign tx: %v", err)
+	}
+	// RLP encode
+	var buf bytes.Buffer
+	if err := signedTx.EncodeRLP(&buf); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to encode tx: %v", err)
+	}
+	txHash := signedTx.Hash().Hex()
+	return &proto.SignTransactionResponse{
+		SignedTransaction: buf.Bytes(),
+		Signature:         "", // optional: could pack v,r,s if needed
+		TransactionHash:   txHash,
+	}, nil
 }
 
 // GetBalance returns balance for specified address
 func (s *WalletService) GetBalance(ctx context.Context, req *proto.GetBalanceRequest) (*proto.GetBalanceResponse, error) {
-	// TODO: Implement balance checking
-	return nil, status.Error(codes.Unimplemented, "balance checking not implemented yet")
+	if req.Address == "" {
+		return nil, status.Error(codes.InvalidArgument, "address is required")
+	}
+
+	// Cache lookup
+	if s.cache != nil {
+		cacheKey := fmt.Sprintf("bal:%d:%s", req.Chain, strings.ToLower(req.Address))
+		if val, err := s.cache.Get(ctx, cacheKey).Result(); err == nil && val != "" {
+			return &proto.GetBalanceResponse{
+				Balance:  val,
+				Symbol:   symbolForChain(req.Chain),
+				Decimals: 18,
+				Chain:    req.Chain,
+			}, nil
+		}
+	}
+
+	var rpcURL string
+	var symbol string
+	var decimals int32 = 18
+	switch req.Chain {
+	case proto.Chain_CHAIN_ETHEREUM:
+		rpcURL = s.config.RPC.EthereumURL
+		symbol = "ETH"
+	case proto.Chain_CHAIN_POLYGON:
+		rpcURL = s.config.RPC.PolygonURL
+		symbol = "MATIC"
+	case proto.Chain_CHAIN_BSC:
+		rpcURL = s.config.RPC.BSCURL
+		symbol = "BNB"
+	default:
+		return nil, status.Error(codes.Unimplemented, "balance for this chain is not implemented yet")
+	}
+	if rpcURL == "" {
+		return nil, status.Error(codes.FailedPrecondition, "RPC URL not configured")
+	}
+
+	httpClient := &http.Client{Timeout: s.config.RPC.Timeout}
+	payload := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["%s","latest"],"id":1}`, req.Address)
+	resp, err := httpClient.Post(rpcURL, "application/json", strings.NewReader(payload))
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "rpc request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, status.Errorf(codes.Unavailable, "rpc status: %s", resp.Status)
+	}
+	type rpcResp struct {
+		Result string `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	var r rpcResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, status.Errorf(codes.Internal, "rpc decode failed: %v", err)
+	}
+	if r.Error != nil {
+		return nil, status.Errorf(codes.Unavailable, "rpc error: %s", r.Error.Message)
+	}
+	balance := r.Result
+
+	// Cache set
+	if s.cache != nil {
+		cacheKey := fmt.Sprintf("bal:%d:%s", req.Chain, strings.ToLower(req.Address))
+		_ = s.cache.Set(ctx, cacheKey, balance, s.config.Cache.BalanceTTL).Err()
+	}
+
+	return &proto.GetBalanceResponse{
+		Balance:  balance,
+		Symbol:   symbol,
+		Decimals: decimals,
+		Chain:    req.Chain,
+	}, nil
+}
+
+// symbolForChain returns native symbol for an EVM chain enum
+func symbolForChain(chain proto.Chain) string {
+	switch chain {
+	case proto.Chain_CHAIN_ETHEREUM:
+		return "ETH"
+	case proto.Chain_CHAIN_POLYGON:
+		return "MATIC"
+	case proto.Chain_CHAIN_BSC:
+		return "BNB"
+	default:
+		return ""
+	}
 }
 
 // mapChainToProto maps database chain string to protobuf enum
