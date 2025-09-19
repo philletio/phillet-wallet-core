@@ -127,8 +127,18 @@ db-reset:
 
 db-migrate:
 	@echo "Running database migrations..."
-	# TODO: Add migration commands when migration tool is implemented
+	@docker-compose exec postgres psql -U postgres -d phillet_wallet -f /docker-entrypoint-initdb.d/001_initial_schema.sql
 	@echo "✅ Database migrations completed"
+
+db-migrate-local:
+	@echo "Running database migrations locally..."
+	@psql -h localhost -U postgres -d phillet_wallet -f migrations/001_initial_schema.sql
+	@echo "✅ Database migrations completed"
+
+db-migrate-status:
+	@echo "Checking migration status..."
+	@docker-compose exec postgres psql -U postgres -d phillet_wallet -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';"
+	@echo "✅ Migration status checked"
 
 # Development environment
 dev: db-up

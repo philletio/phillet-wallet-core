@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/philletio/phillet-wallet-core/api/proto"
 	"github.com/philletio/phillet-wallet-core/internal/config"
@@ -80,15 +81,82 @@ func (s *WalletService) extractUserIDFromContext(ctx context.Context) (string, e
 
 	jwtToken := token[7:]
 
-	// TODO: Validate JWT token with Auth service
-	// For now, we'll use a simple extraction
-	// In production, this should call the Auth service to validate the token
-
-	// Extract user ID from token (simplified for now)
-	// In real implementation, this would be done by calling Auth service
-	userID := "user_" + jwtToken[:8] // Simplified for demo
+	// Validate JWT token
+	userID, err := s.validateJWTToken(jwtToken)
+	if err != nil {
+		return "", status.Error(codes.Unauthenticated, "invalid token: "+err.Error())
+	}
 
 	return userID, nil
+}
+
+// validateJWTToken validates JWT token and extracts user ID
+func (s *WalletService) validateJWTToken(tokenString string) (string, error) {
+	// Parse the JWT token
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Validate signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(s.config.JWT.SecretKey), nil
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("failed to parse token: %w", err)
+	}
+
+	// Validate token claims
+	if !token.Valid {
+		return "", fmt.Errorf("invalid token")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return "", fmt.Errorf("invalid token claims")
+	}
+
+	// Validate issuer
+	if issuer, ok := claims["iss"].(string); !ok || issuer != s.config.JWT.Issuer {
+		return "", fmt.Errorf("invalid issuer")
+	}
+
+	// Validate audience
+	if audience, ok := claims["aud"].(string); !ok || audience != s.config.JWT.Audience {
+		return "", fmt.Errorf("invalid audience")
+	}
+
+	// Extract user ID
+	userID, ok := claims["sub"].(string)
+	if !ok || userID == "" {
+		return "", fmt.Errorf("missing or invalid user ID in token")
+	}
+
+	return userID, nil
+}
+
+// extractClientInfo extracts IP address and User-Agent from gRPC context
+func (s *WalletService) extractClientInfo(ctx context.Context) (ipAddress *string, userAgent *string) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, nil
+	}
+
+	// Extract IP address from X-Forwarded-For or X-Real-IP headers
+	if forwardedFor := md.Get("x-forwarded-for"); len(forwardedFor) > 0 {
+		ip := forwardedFor[0]
+		ipAddress = &ip
+	} else if realIP := md.Get("x-real-ip"); len(realIP) > 0 {
+		ip := realIP[0]
+		ipAddress = &ip
+	}
+
+	// Extract User-Agent
+	if userAgents := md.Get("user-agent"); len(userAgents) > 0 {
+		ua := userAgents[0]
+		userAgent = &ua
+	}
+
+	return ipAddress, userAgent
 }
 
 // GenerateWallet creates a new HD wallet with mnemonic phrase
@@ -156,47 +224,94 @@ func (s *WalletService) GenerateWallet(ctx context.Context, req *proto.GenerateW
 	var addressModels []*models.Address
 
 	for _, chain := range req.Chains {
-		if chain == proto.Chain_CHAIN_ETHEREUM {
-			address, publicKey, err := hdWallet.GenerateEthereumAddress(0)
+		var address string
+		var publicKey string
+		var derivationPath string
+		var chainName string
+
+		switch chain {
+		case proto.Chain_CHAIN_ETHEREUM:
+			address, publicKey, err = hdWallet.GenerateEthereumAddress(0)
 			if err != nil {
 				return nil, status.Errorf(codes.Internal, "failed to generate Ethereum address: %v", err)
 			}
+			derivationPath = "m/44'/60'/0'/0/0"
+			chainName = "ethereum"
 
-			// Create address model
-			addressModel := &models.Address{
-				ID:             uuid.New(),
-				WalletID:       walletModel.ID, // Use UUID from wallet
-				Chain:          "ethereum",
-				Address:        address,
-				DerivationPath: "m/44'/60'/0'/0/0",
-				AddressIndex:   0,
-				IsChange:       false,
-				PublicKeyHash:  &publicKey,
-				CreatedAt:      time.Now(),
-				UpdatedAt:      time.Now(),
-				LastUsedAt:     nil,
-				IsActive:       true,
-				Metadata:       map[string]interface{}{},
-			}
-
-			// Save address to database
-			err = s.repo.CreateAddress(ctx, addressModel)
+		case proto.Chain_CHAIN_POLYGON:
+			// Polygon uses the same address format as Ethereum
+			address, publicKey, err = hdWallet.GenerateEthereumAddress(0)
 			if err != nil {
-				return nil, status.Errorf(codes.Internal, "failed to save address: %v", err)
+				return nil, status.Errorf(codes.Internal, "failed to generate Polygon address: %v", err)
 			}
+			derivationPath = "m/44'/60'/0'/0/0"
+			chainName = "polygon"
 
-			addressModels = append(addressModels, addressModel)
+		case proto.Chain_CHAIN_BSC:
+			// BSC uses the same address format as Ethereum
+			address, publicKey, err = hdWallet.GenerateEthereumAddress(0)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to generate BSC address: %v", err)
+			}
+			derivationPath = "m/44'/60'/0'/0/0"
+			chainName = "bsc"
 
-			addresses = append(addresses, &proto.Address{
-				Chain:          chain,
-				Address:        address,
-				DerivationPath: "m/44'/60'/0'/0/0",
-				Index:          0,
-				IsChange:       false,
-			})
+		case proto.Chain_CHAIN_SOLANA:
+			address, publicKey, err = hdWallet.GenerateSolanaAddress(0)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to generate Solana address: %v", err)
+			}
+			derivationPath = "m/44'/501'/0'/0'/0"
+			chainName = "solana"
+
+		case proto.Chain_CHAIN_TON:
+			address, publicKey, err = hdWallet.GenerateTONAddress(0)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to generate TON address: %v", err)
+			}
+			derivationPath = "m/44'/607'/0'/0'/0"
+			chainName = "ton"
+
+		default:
+			return nil, status.Errorf(codes.InvalidArgument, "unsupported chain: %v", chain)
 		}
-		// TODO: Add support for other chains
+
+		// Create address model
+		addressModel := &models.Address{
+			ID:             uuid.New(),
+			WalletID:       walletModel.ID,
+			Chain:          chainName,
+			Address:        address,
+			DerivationPath: derivationPath,
+			AddressIndex:   0,
+			IsChange:       false,
+			PublicKeyHash:  &publicKey,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+			LastUsedAt:     nil,
+			IsActive:       true,
+			Metadata:       map[string]interface{}{},
+		}
+
+		// Save address to database
+		err = s.repo.CreateAddress(ctx, addressModel)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to save address: %v", err)
+		}
+
+		addressModels = append(addressModels, addressModel)
+
+		addresses = append(addresses, &proto.Address{
+			Chain:          chain,
+			Address:        address,
+			DerivationPath: derivationPath,
+			Index:          0,
+			IsChange:       false,
+		})
 	}
+
+	// Extract client info for audit logging
+	ipAddress, userAgent := s.extractClientInfo(ctx)
 
 	// Log audit event
 	auditLog := &models.AuditLog{
@@ -206,8 +321,8 @@ func (s *WalletService) GenerateWallet(ctx context.Context, req *proto.GenerateW
 		Action:       "wallet_generated",
 		ResourceType: "wallet",
 		ResourceID:   &walletModel.ID,
-		IPAddress:    nil, // TODO: Extract from context
-		UserAgent:    nil, // TODO: Extract from context
+		IPAddress:    ipAddress,
+		UserAgent:    userAgent,
 		Success:      true,
 		RequestData: map[string]interface{}{
 			"word_count": req.WordCount,
@@ -307,45 +422,92 @@ func (s *WalletService) ImportWallet(ctx context.Context, req *proto.ImportWalle
 	var addresses []*proto.Address
 
 	for _, chain := range req.Chains {
-		if chain == proto.Chain_CHAIN_ETHEREUM {
-			address, publicKey, err := hdWallet.GenerateEthereumAddress(0)
+		var address string
+		var publicKey string
+		var derivationPath string
+		var chainName string
+
+		switch chain {
+		case proto.Chain_CHAIN_ETHEREUM:
+			address, publicKey, err = hdWallet.GenerateEthereumAddress(0)
 			if err != nil {
 				return nil, status.Errorf(codes.Internal, "failed to generate Ethereum address: %v", err)
 			}
+			derivationPath = "m/44'/60'/0'/0/0"
+			chainName = "ethereum"
 
-			// Create address model
-			addressModel := &models.Address{
-				ID:             uuid.New(),
-				WalletID:       walletModel.ID, // Use UUID from wallet
-				Chain:          "ethereum",
-				Address:        address,
-				DerivationPath: "m/44'/60'/0'/0/0",
-				AddressIndex:   0,
-				IsChange:       false,
-				PublicKeyHash:  &publicKey,
-				CreatedAt:      time.Now(),
-				UpdatedAt:      time.Now(),
-				LastUsedAt:     nil,
-				IsActive:       true,
-				Metadata:       map[string]interface{}{},
-			}
-
-			// Save address to database
-			err = s.repo.CreateAddress(ctx, addressModel)
+		case proto.Chain_CHAIN_POLYGON:
+			// Polygon uses the same address format as Ethereum
+			address, publicKey, err = hdWallet.GenerateEthereumAddress(0)
 			if err != nil {
-				return nil, status.Errorf(codes.Internal, "failed to save address: %v", err)
+				return nil, status.Errorf(codes.Internal, "failed to generate Polygon address: %v", err)
 			}
+			derivationPath = "m/44'/60'/0'/0/0"
+			chainName = "polygon"
 
-			addresses = append(addresses, &proto.Address{
-				Chain:          chain,
-				Address:        address,
-				DerivationPath: "m/44'/60'/0'/0/0",
-				Index:          0,
-				IsChange:       false,
-			})
+		case proto.Chain_CHAIN_BSC:
+			// BSC uses the same address format as Ethereum
+			address, publicKey, err = hdWallet.GenerateEthereumAddress(0)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to generate BSC address: %v", err)
+			}
+			derivationPath = "m/44'/60'/0'/0/0"
+			chainName = "bsc"
+
+		case proto.Chain_CHAIN_SOLANA:
+			address, publicKey, err = hdWallet.GenerateSolanaAddress(0)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to generate Solana address: %v", err)
+			}
+			derivationPath = "m/44'/501'/0'/0'/0"
+			chainName = "solana"
+
+		case proto.Chain_CHAIN_TON:
+			address, publicKey, err = hdWallet.GenerateTONAddress(0)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to generate TON address: %v", err)
+			}
+			derivationPath = "m/44'/607'/0'/0'/0"
+			chainName = "ton"
+
+		default:
+			return nil, status.Errorf(codes.InvalidArgument, "unsupported chain: %v", chain)
 		}
-		// TODO: Add support for other chains
+
+		// Create address model
+		addressModel := &models.Address{
+			ID:             uuid.New(),
+			WalletID:       walletModel.ID,
+			Chain:          chainName,
+			Address:        address,
+			DerivationPath: derivationPath,
+			AddressIndex:   0,
+			IsChange:       false,
+			PublicKeyHash:  &publicKey,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+			LastUsedAt:     nil,
+			IsActive:       true,
+			Metadata:       map[string]interface{}{},
+		}
+
+		// Save address to database
+		err = s.repo.CreateAddress(ctx, addressModel)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to save address: %v", err)
+		}
+
+		addresses = append(addresses, &proto.Address{
+			Chain:          chain,
+			Address:        address,
+			DerivationPath: derivationPath,
+			Index:          0,
+			IsChange:       false,
+		})
 	}
+
+	// Extract client info for audit logging
+	ipAddress, userAgent := s.extractClientInfo(ctx)
 
 	// Log audit event
 	auditLog := &models.AuditLog{
@@ -355,8 +517,8 @@ func (s *WalletService) ImportWallet(ctx context.Context, req *proto.ImportWalle
 		Action:       "wallet_imported",
 		ResourceType: "wallet",
 		ResourceID:   &walletModel.ID,
-		IPAddress:    nil, // TODO: Extract from context
-		UserAgent:    nil, // TODO: Extract from context
+		IPAddress:    ipAddress,
+		UserAgent:    userAgent,
 		Success:      true,
 		RequestData: map[string]interface{}{
 			"chains": req.Chains,
@@ -537,6 +699,9 @@ func (s *WalletService) SignMessage(ctx context.Context, req *proto.SignMessageR
 		return nil, status.Errorf(codes.Internal, "failed to save signature: %v", err)
 	}
 
+	// Extract client info for audit logging
+	ipAddress, userAgent := s.extractClientInfo(ctx)
+
 	// Log audit event
 	auditLog := &models.AuditLog{
 		ID:           uuid.New(),
@@ -545,8 +710,8 @@ func (s *WalletService) SignMessage(ctx context.Context, req *proto.SignMessageR
 		Action:       "message_signed",
 		ResourceType: "signature",
 		ResourceID:   &signatureModel.ID,
-		IPAddress:    nil, // TODO: Extract from context
-		UserAgent:    nil, // TODO: Extract from context
+		IPAddress:    ipAddress,
+		UserAgent:    userAgent,
 		Success:      true,
 		RequestData: map[string]interface{}{
 			"address_index": req.AddressIndex,

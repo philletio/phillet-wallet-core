@@ -44,7 +44,23 @@ sleep 10
 # Test database connection
 echo ""
 echo "🔌 Testing database connection..."
-# TODO: Add database connection test when repository is integrated
+if docker-compose exec postgres psql -U postgres -d phillet_wallet -c "SELECT 1;" > /dev/null 2>&1; then
+    echo "✅ Database connection successful"
+else
+    echo "❌ Database connection failed"
+    echo "Please ensure the database is running and accessible"
+    exit 1
+fi
+
+# Test database schema
+echo "🔍 Checking database schema..."
+if docker-compose exec postgres psql -U postgres -d phillet_wallet -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';" | grep -q "users"; then
+    echo "✅ Database schema is properly initialized"
+else
+    echo "⚠️  Database schema may not be initialized. Running migrations..."
+    docker-compose exec postgres psql -U postgres -d phillet_wallet -f /docker-entrypoint-initdb.d/001_initial_schema.sql
+    echo "✅ Database migrations completed"
+fi
 
 # Start gRPC server in background
 echo ""
