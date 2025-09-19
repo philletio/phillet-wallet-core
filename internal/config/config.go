@@ -81,6 +81,8 @@ type RPCConfig struct {
 	EthereumURL string        `json:"ethereum_url"`
 	PolygonURL  string        `json:"polygon_url"`
 	BSCURL      string        `json:"bsc_url"`
+	SolanaURL   string        `json:"solana_url"`
+	TONURL      string        `json:"ton_url"`
 	Timeout     time.Duration `json:"timeout"`
 }
 
@@ -134,6 +136,8 @@ func Load() *Config {
 			EthereumURL: getEnv("RPC_ETHEREUM_URL", ""),
 			PolygonURL:  getEnv("RPC_POLYGON_URL", ""),
 			BSCURL:      getEnv("RPC_BSC_URL", ""),
+			SolanaURL:   getEnv("RPC_SOLANA_URL", ""),
+			TONURL:      getEnv("RPC_TON_URL", ""),
 			Timeout:     getEnvAsDuration("RPC_TIMEOUT", 3*time.Second),
 		},
 		Cache: CacheConfig{

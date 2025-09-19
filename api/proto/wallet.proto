@@ -31,6 +31,9 @@ service WalletService {
   
   // GetWalletInfo returns wallet information
   rpc GetWalletInfo(GetWalletInfoRequest) returns (GetWalletInfoResponse);
+  
+  // Health check endpoint
+  rpc Health(HealthRequest) returns (HealthResponse);
 }
 
 // Chain enumeration
@@ -175,4 +178,20 @@ message GetWalletInfoResponse {
   int32 address_count = 4;
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp last_used = 6;
+}
+
+// Health check messages
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1; // "healthy", "degraded", "unhealthy"
+  google.protobuf.Timestamp timestamp = 2;
+  repeated HealthCheck checks = 3;
+}
+
+message HealthCheck {
+  string name = 1;
+  string status = 2; // "ok", "error"
+  string message = 3;
+  google.protobuf.Timestamp timestamp = 4;
 } 

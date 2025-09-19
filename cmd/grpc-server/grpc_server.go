@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/philletio/phillet-wallet-core/api/proto"
 	"github.com/philletio/phillet-wallet-core/internal/config"
+	"github.com/philletio/phillet-wallet-core/internal/ratelimit"
 	"github.com/philletio/phillet-wallet-core/internal/repository"
 	"github.com/philletio/phillet-wallet-core/internal/service"
 	redis "github.com/redis/go-redis/v9"
@@ -40,8 +42,35 @@ func startGRPCServer() {
 
 	log.Println("Successfully connected to database")
 
-	// Create gRPC server
-	grpcServer := grpc.NewServer()
+	// Create rate limiter
+	rateLimiter := ratelimit.NewRateLimiter(&ratelimit.Config{
+		DefaultRate:  10.0, // 10 requests per second
+		DefaultBurst: 20,   // burst of 20 requests
+		MethodLimits: map[string]ratelimit.MethodLimit{
+			"/phillet.wallet.WalletService/GenerateWallet": {
+				Rate:  5.0, // 5 requests per second for wallet generation
+				Burst: 10,
+			},
+			"/phillet.wallet.WalletService/ImportWallet": {
+				Rate:  5.0, // 5 requests per second for wallet import
+				Burst: 10,
+			},
+			"/phillet.wallet.WalletService/SignMessage": {
+				Rate:  20.0, // 20 requests per second for signing
+				Burst: 50,
+			},
+			"/phillet.wallet.WalletService/SignTransaction": {
+				Rate:  15.0, // 15 requests per second for transaction signing
+				Burst: 30,
+			},
+		},
+		CleanupInterval: 5 * time.Minute,
+	})
+
+	// Create gRPC server with rate limiting interceptor
+	grpcServer := grpc.NewServer(
+		grpc.UnaryInterceptor(ratelimit.RateLimitInterceptor(rateLimiter)),
+	)
 
 	// Create wallet service with repository and config
 	walletService := service.NewWalletService(repo, cfg)

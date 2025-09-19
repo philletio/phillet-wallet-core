@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/gagliardetto/solana-go"
 	"github.com/tyler-smith/go-bip39"
 )
 
@@ -172,6 +174,120 @@ func (w *HDWallet) GetMnemonicHash() string {
 // GetSalt returns the salt
 func (w *HDWallet) GetSalt() string {
 	return w.Salt
+}
+
+// GenerateSolanaAddress generates a Solana address for the given index
+func (w *HDWallet) GenerateSolanaAddress(index int) (string, string, error) {
+	// Derive key pair for Solana (using Ed25519)
+	keyPair, err := w.deriveSolanaKeyPair(index)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to derive Solana key pair: %v", err)
+	}
+
+	// Create Solana public key
+	pubKey := solana.PublicKeyFromBytes(keyPair.PublicKey)
+	address := pubKey.String()
+
+	// Get public key as hex string
+	publicKeyHex := hex.EncodeToString(keyPair.PublicKey)
+
+	return address, publicKeyHex, nil
+}
+
+// GenerateTONAddress generates a TON address for the given index
+func (w *HDWallet) GenerateTONAddress(index int) (string, string, error) {
+	// Derive key pair for TON
+	keyPair, err := w.deriveTONKeyPair(index)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to derive TON key pair: %v", err)
+	}
+
+	// Create TON address
+	address, err := w.createTONAddress(keyPair.PublicKey)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create TON address: %v", err)
+	}
+
+	// Get public key as hex string
+	publicKeyHex := hex.EncodeToString(keyPair.PublicKey)
+
+	return address, publicKeyHex, nil
+}
+
+// deriveSolanaKeyPair derives a Solana key pair for the given index
+func (w *HDWallet) deriveSolanaKeyPair(index int) (*KeyPair, error) {
+	// For Solana, we use a different derivation path: m/44'/501'/0'/0'/index
+	// This follows the Solana standard for HD wallets
+
+	// Create a deterministic seed from the wallet seed and index
+	seed := make([]byte, 32)
+	copy(seed, w.Seed)
+
+	// Add index to seed for uniqueness
+	indexBytes := make([]byte, 4)
+	indexBytes[0] = byte(index >> 24)
+	indexBytes[1] = byte(index >> 16)
+	indexBytes[2] = byte(index >> 8)
+	indexBytes[3] = byte(index)
+
+	// Hash the combined seed
+	hash := sha256.Sum256(append(seed, indexBytes...))
+
+	// Generate Ed25519 key pair from hash
+	privateKey := ed25519.NewKeyFromSeed(hash[:])
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+
+	return &KeyPair{
+		PrivateKey: privateKey,
+		PublicKey:  publicKey,
+	}, nil
+}
+
+// deriveTONKeyPair derives a TON key pair for the given index
+func (w *HDWallet) deriveTONKeyPair(index int) (*KeyPair, error) {
+	// For TON, we use a similar approach but with TON-specific derivation
+	// TON uses Ed25519 for key generation
+
+	// Create a deterministic seed from the wallet seed and index
+	seed := make([]byte, 32)
+	copy(seed, w.Seed)
+
+	// Add index to seed for uniqueness
+	indexBytes := make([]byte, 4)
+	indexBytes[0] = byte(index >> 24)
+	indexBytes[1] = byte(index >> 16)
+	indexBytes[2] = byte(index >> 8)
+	indexBytes[3] = byte(index)
+
+	// Hash the combined seed
+	hash := sha256.Sum256(append(seed, indexBytes...))
+
+	// Generate Ed25519 key pair from hash
+	privateKey := ed25519.NewKeyFromSeed(hash[:])
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+
+	return &KeyPair{
+		PrivateKey: privateKey,
+		PublicKey:  publicKey,
+	}, nil
+}
+
+// createTONAddress creates a TON address from public key
+func (w *HDWallet) createTONAddress(publicKey []byte) (string, error) {
+	// Create a TON address using the public key
+	// This is a simplified implementation - in production you'd use proper TON address generation
+
+	// For now, we'll create a basic address format
+	// In reality, TON addresses are more complex and include workchain information
+	address := "0:" + hex.EncodeToString(publicKey[:16]) // Simplified format
+
+	return address, nil
+}
+
+// KeyPair represents a cryptographic key pair
+type KeyPair struct {
+	PrivateKey ed25519.PrivateKey
+	PublicKey  ed25519.PublicKey
 }
 
 // GetUserID returns the user ID

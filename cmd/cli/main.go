@@ -47,7 +47,7 @@ func generateWallet(reader *bufio.Reader) {
 	}
 
 	// Generate new wallet
-	wallet, err := wallet.NewHDWallet(userID)
+	wallet, err := wallet.NewHDWallet(userID, 12, "")
 	if err != nil {
 		log.Fatalf("Failed to generate wallet: %v", err)
 	}
@@ -87,7 +87,7 @@ func importWallet(reader *bufio.Reader) {
 	}
 
 	// Import wallet
-	wallet, err := wallet.ImportHDWallet(mnemonic, userID)
+	wallet, err := wallet.ImportHDWallet(mnemonic, userID, "")
 	if err != nil {
 		log.Fatalf("Failed to import wallet: %v", err)
 	}

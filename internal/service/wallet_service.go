@@ -17,6 +17,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/philletio/phillet-wallet-core/api/proto"
 	"github.com/philletio/phillet-wallet-core/internal/config"
+	"github.com/philletio/phillet-wallet-core/internal/logger"
+	"github.com/philletio/phillet-wallet-core/internal/metrics"
 	"github.com/philletio/phillet-wallet-core/internal/models"
 	"github.com/philletio/phillet-wallet-core/internal/repository"
 	"github.com/philletio/phillet-wallet-core/internal/security"
@@ -32,16 +34,23 @@ import (
 // WalletService implements the gRPC wallet service
 type WalletService struct {
 	proto.UnimplementedWalletServiceServer
-	repo   *repository.PostgresRepository
-	config *config.Config
-	cache  *redis.Client
+	repo    *repository.PostgresRepository
+	config  *config.Config
+	cache   *redis.Client
+	metrics *metrics.Metrics
+	logger  *logger.Logger
 }
 
 // NewWalletService creates a new wallet service instance
 func NewWalletService(repo *repository.PostgresRepository, config *config.Config) *WalletService {
 	return &WalletService{
-		repo:   repo,
-		config: config,
+		repo:    repo,
+		config:  config,
+		metrics: metrics.NewMetrics(),
+		logger: logger.NewLogger(&logger.Config{
+			Level:  config.Logging.Level,
+			Format: config.Logging.Format,
+		}),
 	}
 }
 
@@ -216,6 +225,16 @@ func (s *WalletService) GenerateWallet(ctx context.Context, req *proto.GenerateW
 		// Log error but don't fail the request
 		fmt.Printf("Failed to create audit log: %v\n", err)
 	}
+
+	// Record metrics
+	s.metrics.RecordWalletCreated()
+
+	// Log wallet creation
+	s.logger.LogWalletOperation(ctx, "wallet_created", walletID, userID, true, map[string]interface{}{
+		"word_count":          req.WordCount,
+		"addresses_generated": len(addresses),
+		"chains":              req.Chains,
+	})
 
 	return &proto.GenerateWalletResponse{
 		WalletId:  walletID,
